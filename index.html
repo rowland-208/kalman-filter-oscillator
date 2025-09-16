@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kalman Filter Visualization</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #1a1a2e;
+            --surface-color: #2a2a3e;
+            --primary-text: #e0e0e0;
+            --secondary-text: #a0a0b0;
+            --accent-blue: #00f5d4;
+            --accent-pink: #ff00f7;
+            --accent-green: #70e000;
+            --accent-white: #ffffff;
+            --border-color: #4a4a5a;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            background-color: var(--bg-color);
+            color: var(--primary-text);
+            margin: 0;
+            padding: 20px 0;
+        }
+        #visualization-container {
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            background-color: var(--surface-color);
+            padding: 20px;
+            width: 90%;
+            max-width: 840px;
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            background-color: #1e1e2f;
+            border-radius: 8px;
+            width: 100%;
+            height: auto;
+        }
+        .controls-group {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-color);
+        }
+        #main-controls {
+            margin-top: 20px; /* Added margin */
+            text-align: center;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+            padding-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            border-radius: 8px;
+            border: 2px solid var(--accent-blue);
+            background-color: transparent;
+            color: var(--accent-blue);
+            transition: all 0.3s;
+            min-width: 180px;
+        }
+        button:hover:not(:disabled) {
+            background-color: var(--accent-blue);
+            color: var(--bg-color);
+            box-shadow: 0 0 15px var(--accent-blue);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        #toggle-doppler-btn.active {
+            border-color: var(--accent-green);
+            color: var(--accent-green);
+        }
+        #toggle-doppler-btn.active:hover:not(:disabled) {
+            background-color: var(--accent-green);
+            box-shadow: 0 0 15px var(--accent-green);
+        }
+         #toggle-doppler-btn {
+            border-color: var(--border-color);
+            color: var(--secondary-text);
+        }
+        .control-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            color: var(--secondary-text);
+        }
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 450px; /* Increased width for value */
+            margin: 5px auto;
+            transition: opacity 0.3s;
+        }
+        .slider-container.disabled {
+            opacity: 0.4;
+            pointer-events: none;
+        }
+        .slider-container label {
+            white-space: nowrap;
+            color: var(--secondary-text);
+            flex-basis: 150px;
+            text-align: left;
+        }
+        .slider-value {
+            color: var(--primary-text);
+            font-weight: 500;
+            min-width: 40px; /* Reserve space */
+            text-align: left;
+        }
+        
+        /* Custom Slider Styles */
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]:focus {
+            outline: none;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: var(--border-color);
+            border-radius: 5px;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: var(--accent-blue);
+            cursor: pointer;
+            margin-top: -6px;
+            box-shadow: 0 0 5px var(--accent-blue);
+        }
+        input[type=range]::-moz-range-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: var(--border-color);
+            border-radius: 5px;
+        }
+        input[type=range]::-moz-range-thumb {
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: var(--accent-blue);
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 0 5px var(--accent-blue);
+        }
+
+    </style>
+</head>
+<body>
+    <div id="visualization-container">
+        <canvas id="kalman-canvas" width="800" height="300"></canvas>
+        <div id="main-controls">
+            <button id="action-btn">Take Measurement</button>
+            <button id="toggle-doppler-btn">Enable Doppler</button>
+            <div class="control-item">
+                <label for="freq-slider">Oscillator Freq:</label>
+                <input type="range" id="freq-slider" min="0" max="2" step="0.1" value="1">
+                <span id="freq-slider-value" class="slider-value"></span>
+            </div>
+        </div>
+        <div class="controls-group">
+            <div class="slider-container">
+                <label for="q-pos-slider">Position Process Noise:</label>
+                <input type="range" id="q-pos-slider" min="0" max="0.1" step="0.001" value="0.01">
+                <span id="q-pos-slider-value" class="slider-value"></span>
+            </div>
+            <div class="slider-container">
+                <label for="q-vel-slider">Velocity Process Noise:</label>
+                <input type="range" id="q-vel-slider" min="0" max="0.1" step="0.001" value="0.01">
+                <span id="q-vel-slider-value" class="slider-value"></span>
+            </div>
+            <div class="slider-container" id="q-k-slider-container">
+                <label for="q-k-slider">K Process Noise:</label>
+                <input type="range" id="q-k-slider" min="0" max="0.01" step="0.0001" value="0.001">
+                <span id="q-k-slider-value" class="slider-value"></span>
+            </div>
+            <div class="slider-container">
+                <label for="update-freq-slider">Auto-Update (Hz):</label>
+                <input type="range" id="update-freq-slider" min="0" max="10" step="0.5" value="0">
+                <span id="update-freq-slider-value" class="slider-value"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- We use the numeric.js library for matrix operations -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.getElementById('kalman-canvas');
+            const ctx = canvas.getContext('2d');
+            
+            // --- Control Elements ---
+            const actionBtn = document.getElementById('action-btn');
+            const toggleDopplerBtn = document.getElementById('toggle-doppler-btn');
+            const freqSlider = document.getElementById('freq-slider');
+            const qPosSlider = document.getElementById('q-pos-slider');
+            const qVelSlider = document.getElementById('q-vel-slider');
+            const qkSlider = document.getElementById('q-k-slider');
+            const updateFreqSlider = document.getElementById('update-freq-slider');
+            
+            // --- Slider Value Display Elements ---
+            const freqSliderValue = document.getElementById('freq-slider-value');
+            const qPosSliderValue = document.getElementById('q-pos-slider-value');
+            const qVelSliderValue = document.getElementById('q-vel-slider-value');
+            const qkSliderValue = document.getElementById('q-k-slider-value');
+            const updateFreqSliderValue = document.getElementById('update-freq-slider-value');
+            
+            // --- Graphics Constants ---
+            const baselineY = canvas.height * 0.8;
+
+            // --- State Initialization ---
+            let trueState = {
+                pos: 150,
+                vel: 0,
+                k: parseFloat(freqSlider.value)
+            };
+
+            let x = [[0], [0], [0.5]];
+            let P = [[10000, 0, 0], [0, 10000, 0], [0, 0, 10000]];
+            let Q = [
+                [parseFloat(qPosSlider.value), 0, 0],
+                [0, parseFloat(qVelSlider.value), 0],
+                [0, 0, parseFloat(qkSlider.value)]
+            ];
+            const R_pos_only = [[100]]; // Measurement noise for position
+            const R_doppler = [[100, 0], [0, 10]]; // Measurement noise for position and velocity
+
+            let measurement = null;
+            let showMeasurementDistribution = false;
+            let lastTime = 0;
+            let isMeasurementPhase = true;
+            let animationFrameId;
+            let showPosterior = false;
+            
+            let autoUpdateInterval = 0;
+            let timeSinceLastAutoUpdate = 0;
+            let isDopplerEnabled = false;
+
+            // --- Core Logic ---
+
+            function updateTrueState(dt) {
+                const { pos, vel, k } = trueState;
+                const newVel = vel - k * pos * dt;
+                const newPos = pos + newVel * dt;
+                trueState.pos = newPos;
+                trueState.vel = newVel;
+            }
+
+            function predict(dt) {
+                const pos = x[0][0];
+                const vel = x[1][0];
+                const k = x[2][0];
+                x = [
+                    [pos + vel * dt],
+                    [vel - k * pos * dt],
+                    [k]
+                ];
+                const F = [ [1, dt, 0], [-k * dt, 1, -pos * dt], [0, 0, 1] ];
+                const F_T = numeric.transpose(F);
+                P = numeric.add(numeric.dot(numeric.dot(F, P), F_T), Q);
+            }
+
+            function update(z) {
+                let y, H, R;
+
+                if (isDopplerEnabled) {
+                    y = [ [z[0] - x[0][0]], [z[1] - x[1][0]] ];
+                    H = [ [1, 0, 0], [0, 1, 0] ];
+                    R = R_doppler;
+                } else {
+                    y = [ [z - x[0][0]] ];
+                    H = [ [1, 0, 0] ];
+                    R = R_pos_only;
+                }
+
+                const H_T = numeric.transpose(H);
+                const S = numeric.add(numeric.dot(numeric.dot(H, P), H_T), R);
+                const K = numeric.dot(numeric.dot(P, H_T), numeric.inv(S));
+                x = numeric.add(x, numeric.dot(K, y));
+                const I = numeric.identity(3);
+                P = numeric.dot(numeric.sub(I, numeric.dot(K, H)), P);
+            }
+            
+            // --- Animation and Drawing ---
+
+            function animateUpdate(startX, startP, endX, endP) {
+                const animationDuration = 500; // ms
+                let startTime = null;
+                actionBtn.disabled = true;
+
+                function animationStep(timestamp) {
+                    if (!startTime) startTime = timestamp;
+                    const elapsed = timestamp - startTime;
+                    let progress = Math.min(elapsed / animationDuration, 1.0);
+                    progress = 1 - Math.pow(1 - progress, 3);
+
+                    for (let i = 0; i < x.length; i++) {
+                        x[i][0] = startX[i][0] + (endX[i][0] - startX[i][0]) * progress;
+                    }
+                    for (let i = 0; i < P.length; i++) {
+                        for (let j = 0; j < P[i].length; j++) {
+                            P[i][j] = startP[i][j] + (endP[i][j] - startP[i][j]) * progress;
+                        }
+                    }
+                    
+                    draw(progress); 
+
+                    if (elapsed < animationDuration) {
+                        requestAnimationFrame(animationStep);
+                    } else {
+                        x = endX;
+                        P = endP;
+                        showPosterior = true;
+                        actionBtn.textContent = 'Take Measurement';
+                        isMeasurementPhase = true;
+                        actionBtn.disabled = false;
+                        lastTime = performance.now();
+                        animationFrameId = requestAnimationFrame(gameLoop);
+                    }
+                }
+                requestAnimationFrame(animationStep);
+            }
+
+            function drawDistribution(mean, variance, color) {
+                const std = Math.sqrt(Math.max(0, variance));
+                const amplitude = canvas.height * 0.6;
+                ctx.shadowColor = color;
+                ctx.shadowBlur = 10;
+                ctx.strokeStyle = color;
+                ctx.fillStyle = `${color}50`; 
+                ctx.lineWidth = 2.5;
+                ctx.beginPath();
+                const startX = canvas.width / 2 + mean - 4 * std;
+                ctx.moveTo(startX, baselineY);
+                for (let i = -4 * std; i <= 4 * std; i += 2) {
+                    const x_pos = canvas.width / 2 + mean + i;
+                    const y_pos = baselineY - Math.exp(-0.5 * (i / std) ** 2) * amplitude;
+                    ctx.lineTo(x_pos, y_pos);
+                }
+                const endX = canvas.width / 2 + mean + 4 * std;
+                ctx.lineTo(endX, baselineY);
+                ctx.closePath();
+                ctx.stroke();
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+
+            function drawTrueState() {
+                const stateColor = '#ffffff';
+                ctx.fillStyle = stateColor;
+                ctx.shadowColor = stateColor;
+                ctx.shadowBlur = 8;
+                ctx.beginPath();
+                ctx.arc(canvas.width / 2 + trueState.pos, baselineY, 6, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+
+            function drawAxisLine() {
+                ctx.strokeStyle = '#4a4a5a';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(0, baselineY);
+                ctx.lineTo(canvas.width, baselineY);
+                ctx.stroke();
+            }
+
+            function drawZeroLine() {
+                ctx.strokeStyle = '#4a4a5a';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 4]);
+                ctx.beginPath();
+                ctx.moveTo(canvas.width / 2, canvas.height * 0.1);
+                ctx.lineTo(canvas.width / 2, canvas.height * 0.9);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+            
+            function draw(animationProgress) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                drawAxisLine();
+                drawZeroLine();
+
+                let distributionColor;
+                if (animationProgress !== undefined) {
+                    distributionColor = interpolateColor('#00f5d4', '#70e000', animationProgress);
+                } else {
+                    const isReadyForMeasurement = !showMeasurementDistribution;
+                    distributionColor = (showPosterior && isReadyForMeasurement) ? '#70e000' : '#00f5d4';
+                }
+                
+                drawDistribution(x[0][0], P[0][0], distributionColor);
+
+                if (showMeasurementDistribution && measurement !== null) {
+                    const pos_measurement = Array.isArray(measurement) ? measurement[0] : measurement;
+                    drawDistribution(pos_measurement, R_pos_only[0][0], '#ff00f7');
+                }
+
+                drawTrueState();
+            }
+            
+            function gameLoop(timestamp) {
+                const dt = (timestamp - lastTime) / 1000;
+                lastTime = timestamp;
+
+                if (!isNaN(dt) && dt > 0) {
+                    updateTrueState(dt);
+                    predict(dt);
+                    if (autoUpdateInterval > 0) {
+                        timeSinceLastAutoUpdate += dt;
+                        if (timeSinceLastAutoUpdate >= autoUpdateInterval) {
+                            let autoMeasurement;
+                            if (isDopplerEnabled) {
+                                const posNoise = (Math.random() - 0.5) * 2 * Math.sqrt(R_doppler[0][0]);
+                                const velNoise = (Math.random() - 0.5) * 2 * Math.sqrt(R_doppler[1][1]);
+                                autoMeasurement = [trueState.pos + posNoise, trueState.vel + velNoise];
+                            } else {
+                                autoMeasurement = trueState.pos + (Math.random() - 0.5) * 2 * Math.sqrt(R_pos_only[0][0]);
+                            }
+                            update(autoMeasurement);
+                            showPosterior = true;
+                            timeSinceLastAutoUpdate = 0;
+                        }
+                    }
+                }
+                
+                draw();
+                animationFrameId = requestAnimationFrame(gameLoop);
+            }
+            
+            // --- Helpers & Event Listeners ---
+
+            function updateAllSliderValues() {
+                freqSliderValue.textContent = parseFloat(freqSlider.value).toFixed(1);
+                qPosSliderValue.textContent = parseFloat(qPosSlider.value).toFixed(3);
+                qVelSliderValue.textContent = parseFloat(qVelSlider.value).toFixed(3);
+                qkSliderValue.textContent = parseFloat(qkSlider.value).toFixed(4);
+                updateFreqSliderValue.textContent = parseFloat(updateFreqSlider.value).toFixed(1);
+            }
+
+            actionBtn.addEventListener('click', () => {
+                if (isMeasurementPhase) {
+                    showPosterior = false;
+                    if (isDopplerEnabled) {
+                        const posNoise = (Math.random() - 0.5) * 2 * Math.sqrt(R_doppler[0][0]);
+                        const velNoise = (Math.random() - 0.5) * 2 * Math.sqrt(R_doppler[1][1]);
+                        measurement = [trueState.pos + posNoise, trueState.vel + velNoise];
+                    } else {
+                        measurement = trueState.pos + (Math.random() - 0.5) * 2 * Math.sqrt(R_pos_only[0][0]);
+                    }
+
+                    showMeasurementDistribution = true;
+                    actionBtn.textContent = 'Run Filter';
+                    isMeasurementPhase = false;
+                    draw(); 
+                    cancelAnimationFrame(animationFrameId);
+                } else {
+                    if (measurement !== null) {
+                        const priorX = JSON.parse(JSON.stringify(x));
+                        const priorP = JSON.parse(JSON.stringify(P));
+                        update(measurement);
+                        const posteriorX = JSON.parse(JSON.stringify(x));
+                        const posteriorP = JSON.parse(JSON.stringify(P));
+                        x = priorX;
+                        P = priorP;
+                        showMeasurementDistribution = false;
+                        measurement = null;
+                        animateUpdate(priorX, priorP, posteriorX, posteriorP);
+                    }
+                }
+            });
+
+            toggleDopplerBtn.addEventListener('click', () => {
+                isDopplerEnabled = !isDopplerEnabled;
+                if (isDopplerEnabled) {
+                    toggleDopplerBtn.textContent = 'Doppler: ON';
+                    toggleDopplerBtn.classList.add('active');
+                } else {
+                    toggleDopplerBtn.textContent = 'Enable Doppler';
+                    toggleDopplerBtn.classList.remove('active');
+                }
+            });
+            
+            freqSlider.addEventListener('input', (e) => {
+                trueState.k = parseFloat(e.target.value);
+                updateAllSliderValues();
+            });
+
+            [qPosSlider, qVelSlider, qkSlider, updateFreqSlider].forEach(slider => {
+                slider.addEventListener('input', (e) => {
+                    if (e.target === qPosSlider) Q[0][0] = parseFloat(e.target.value);
+                    if (e.target === qVelSlider) Q[1][1] = parseFloat(e.target.value);
+                    if (e.target === qkSlider) Q[2][2] = parseFloat(e.target.value);
+                    if (e.target === updateFreqSlider) {
+                        const freq = parseFloat(e.target.value);
+                        autoUpdateInterval = (freq > 0) ? 1 / freq : 0;
+                    }
+                    updateAllSliderValues();
+                });
+            });
+            
+            function hexToRgb(hex) {
+                const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+                return result ? { r: parseInt(result[1], 16), g: parseInt(result[2], 16), b: parseInt(result[3], 16) } : null;
+            }
+
+            function rgbToHex(r, g, b) {
+                return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).padStart(6, '0');
+            }
+
+            function interpolateColor(color1, color2, factor) {
+                const c1 = hexToRgb(color1), c2 = hexToRgb(color2);
+                if (!c1 || !c2) return color1;
+                const r = Math.round(c1.r + factor * (c2.r - c1.r));
+                const g = Math.round(c1.g + factor * (c2.g - c1.g));
+                const b = Math.round(c1.b + factor * (c2.b - c1.b));
+                return rgbToHex(r, g, b);
+            }
+
+            // --- Initial Setup ---
+            updateAllSliderValues();
+            lastTime = performance.now();
+            animationFrameId = requestAnimationFrame(gameLoop);
+        });
+    </script>
+</body>
+</html>
+
