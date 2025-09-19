@@ -47,6 +47,31 @@
             border-radius: 8px;
             width: 100%;
             height: auto;
+            position: relative;
+        }
+        #timeseries-canvas {
+            margin-top: 20px;
+        }
+        #clear-sites-btn {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            border-radius: 6px;
+            border: 1px solid #ff9500;
+            background-color: rgba(255, 149, 0, 0.1);
+            color: #ff9500;
+            transition: all 0.3s;
+            display: none;
+            z-index: 10;
+        }
+        #clear-sites-btn:hover {
+            background-color: rgba(255, 149, 0, 0.2);
+            border-color: #ffb347;
+            color: #ffb347;
         }
         .controls-group {
             margin-top: 20px;
@@ -177,10 +202,16 @@
 </head>
 <body>
     <div id="visualization-container">
-        <canvas id="kalman-canvas" width="800" height="300"></canvas>
+        <div style="position: relative;">
+            <canvas id="kalman-canvas" width="800" height="200"></canvas>
+            <button id="clear-sites-btn">Clear All Sites</button>
+        </div>
+        <canvas id="timeseries-canvas" width="800" height="200"></canvas>
         <div id="main-controls">
             <button id="action-btn">Take Measurement</button>
             <button id="toggle-doppler-btn">Enable Doppler</button>
+            <button id="reset-filter-btn">Reset Filter</button>
+            <button id="observer-sites-btn">Observer Sites</button>
             <div class="control-item">
                 <label for="freq-slider">Oscillator Freq:</label>
                 <input type="range" id="freq-slider" min="0" max="2" step="0.1" value="1">
@@ -190,23 +221,18 @@
         <div class="controls-group">
             <div class="slider-container">
                 <label for="q-pos-slider">Position Process Noise:</label>
-                <input type="range" id="q-pos-slider" min="0" max="0.2" step="0.001" value="0.01">
+                <input type="range" id="q-pos-slider" min="0" max="1.0" step="0.01" value="0.5">
                 <span id="q-pos-slider-value" class="slider-value"></span>
             </div>
             <div class="slider-container">
                 <label for="q-vel-slider">Velocity Process Noise:</label>
-                <input type="range" id="q-vel-slider" min="0" max="0.2" step="0.001" value="0.01">
+                <input type="range" id="q-vel-slider" min="0" max="1.0" step="0.01" value="0.5">
                 <span id="q-vel-slider-value" class="slider-value"></span>
             </div>
             <div class="slider-container" id="q-k-slider-container">
                 <label for="q-k-slider">K Process Noise:</label>
-                <input type="range" id="q-k-slider" min="0" max="2e-4" step="2e-6" value="5e-6">
+                <input type="range" id="q-k-slider" min="0" max="1e-3" step="1e-5" value="5e-4">
                 <span id="q-k-slider-value" class="slider-value"></span>
-            </div>
-            <div class="slider-container">
-                <label for="update-freq-slider">Auto-Update (Hz):</label>
-                <input type="range" id="update-freq-slider" min="0" max="10" step="0.5" value="0">
-                <span id="update-freq-slider-value" class="slider-value"></span>
             </div>
         </div>
     </div>
@@ -217,22 +243,25 @@
         document.addEventListener('DOMContentLoaded', () => {
             const canvas = document.getElementById('kalman-canvas');
             const ctx = canvas.getContext('2d');
+            const timeseriesCanvas = document.getElementById('timeseries-canvas');
+            const timeseriesCtx = timeseriesCanvas.getContext('2d');
             
             // --- Control Elements ---
             const actionBtn = document.getElementById('action-btn');
             const toggleDopplerBtn = document.getElementById('toggle-doppler-btn');
+            const resetFilterBtn = document.getElementById('reset-filter-btn');
+            const observerSitesBtn = document.getElementById('observer-sites-btn');
+            const clearSitesBtn = document.getElementById('clear-sites-btn');
             const freqSlider = document.getElementById('freq-slider');
             const qPosSlider = document.getElementById('q-pos-slider');
             const qVelSlider = document.getElementById('q-vel-slider');
             const qkSlider = document.getElementById('q-k-slider');
-            const updateFreqSlider = document.getElementById('update-freq-slider');
             
             // --- Slider Value Display Elements ---
             const freqSliderValue = document.getElementById('freq-slider-value');
             const qPosSliderValue = document.getElementById('q-pos-slider-value');
             const qVelSliderValue = document.getElementById('q-vel-slider-value');
             const qkSliderValue = document.getElementById('q-k-slider-value');
-            const updateFreqSliderValue = document.getElementById('update-freq-slider-value');
             
             // --- Graphics Constants ---
             const baselineY = canvas.height * 0.8;
@@ -264,6 +293,128 @@
             let autoUpdateInterval = 0;
             let timeSinceLastAutoUpdate = 0;
             let isDopplerEnabled = false;
+
+            // --- observer Sites ---
+            let placingObserverSites = false;
+            let observerSites = []; // Array of positions where observer sites are placed
+
+            // --- Mouse interaction state ---
+            let isDragging = false;
+
+            // --- Filter reset state ---
+            let isResettingFilter = false;
+            let resetStep = 0; // 0: waiting for center click, 1: waiting for width click
+            let resetCenter = 0;
+            let resetWidth = 100;
+
+            // --- Time Series Data Buffer ---
+            const bufferSize = 400;
+            let timeSeriesData = [];
+            let timeCounter = 0;
+
+            function canvasToWorldPos(canvasX) {
+                return canvasX - canvas.width / 2;
+            }
+
+            function worldToCanvasPos(worldPos) {
+                return canvas.width / 2 + worldPos;
+            }
+
+            function isNearTrueState(mouseX, mouseY) {
+                const trueStateCanvasX = worldToCanvasPos(trueState.pos);
+                const trueStateCanvasY = baselineY;
+                const distance = Math.sqrt(Math.pow(mouseX - trueStateCanvasX, 2) + Math.pow(mouseY - trueStateCanvasY, 2));
+                return distance <= 20; // 20 pixel radius for easier clicking
+            }
+
+            // --- Observer Sites Functions ---
+            
+            function addObserverSite(worldPos) {
+                observerSites.push(worldPos);
+            }
+            
+            function removeObserverSite(worldPos) {
+                const tolerance = 20; // pixels
+                for (let i = observerSites.length - 1; i >= 0; i--) {
+                    const siteCanvasX = worldToCanvasPos(observerSites[i]);
+                    const clickCanvasX = worldToCanvasPos(worldPos);
+                    if (Math.abs(siteCanvasX - clickCanvasX) <= tolerance) {
+                        observerSites.splice(i, 1);
+                        return true; // Site was removed
+                    }
+                }
+                return false; // No site was close enough
+            }
+            
+            function checkObserverCrossings(oldPos, newPos) {
+                for (const sitePos of observerSites) {
+                    // Check if target crossed this observer site
+                    if ((oldPos <= sitePos && newPos >= sitePos) || (oldPos >= sitePos && newPos <= sitePos)) {
+                        // Target crossed this observer site, trigger measurement
+                        triggerObserverMeasurement();
+                        break; // Only one measurement per frame
+                    }
+                }
+            }
+            
+            function triggerObserverMeasurement() {
+                let autoMeasurement;
+                if (isDopplerEnabled) {
+                    const posNoise = (Math.random() - 0.5) * 2 * Math.sqrt(R_doppler[0][0]);
+                    const velNoise = (Math.random() - 0.5) * 2 * Math.sqrt(R_doppler[1][1]);
+                    autoMeasurement = [trueState.pos + posNoise, trueState.vel + velNoise];
+                } else {
+                    autoMeasurement = trueState.pos + (Math.random() - 0.5) * 2 * Math.sqrt(R_pos_only[0][0]);
+                }
+                update(autoMeasurement);
+                showPosterior = true;
+            }
+            
+            function drawObserverSites() {
+                ctx.strokeStyle = '#ff9500'; // Orange color for observer sites
+                ctx.lineWidth = 3;
+                ctx.setLineDash([5, 5]); // Dashed line
+                
+                for (const sitePos of observerSites) {
+                    const canvasX = worldToCanvasPos(sitePos);
+                    ctx.beginPath();
+                    ctx.moveTo(canvasX, canvas.height * 0.1);
+                    ctx.lineTo(canvasX, canvas.height * 0.9);
+                    ctx.stroke();
+                }
+                
+                ctx.setLineDash([]); // Reset line dash
+            }
+            
+            function clearAllObserverSites() {
+                observerSites = [];
+                draw();
+                drawTimeSeries();
+            }
+
+            // --- Core Logic ---
+
+            function addToBuffer(dt) {
+                timeCounter += dt;
+                const pos_variance = P[0][0];
+                const pos_estimate = x[0][0];
+                const three_sigma = 3 * Math.sqrt(Math.max(0, pos_variance));
+                
+                const dataPoint = {
+                    time: timeCounter,
+                    truePos: trueState.pos,
+                    estimatedPos: pos_estimate,
+                    upperBound: pos_estimate + three_sigma,
+                    lowerBound: pos_estimate - three_sigma
+                };
+                
+                timeSeriesData.push(dataPoint);
+                
+                // Keep only the last bufferSize samples
+                if (timeSeriesData.length > bufferSize) {
+                    timeSeriesData.shift();
+                }
+            }
 
             // --- Core Logic ---
 
@@ -310,12 +461,160 @@
                 P = numeric.dot(numeric.sub(I, numeric.dot(K, H)), P);
             }
             
+            // --- Time Series Drawing Functions ---
+
+            function drawTimeSeries() {
+                if (timeSeriesData.length < 2) return;
+                
+                timeseriesCtx.clearRect(0, 0, timeseriesCanvas.width, timeseriesCanvas.height);
+                
+                // Find time bounds but use fixed position limits to match main canvas
+                let minTime = Math.min(...timeSeriesData.map(d => d.time));
+                let maxTime = Math.max(...timeSeriesData.map(d => d.time));
+                
+                // Use fixed y-limits to match the main canvas x-limits (-400 to +400)
+                const minPos = -400;
+                const maxPos = 400;
+                
+                const margin = { top: 0, right: 0, bottom: 0, left: 0 };
+                const plotWidth = timeseriesCanvas.width - margin.left - margin.right;
+                const plotHeight = timeseriesCanvas.height - margin.top - margin.bottom;
+                
+                // Helper function to convert data coordinates to canvas coordinates
+                function dataToCanvas(time, pos) {
+                    const x = margin.left + ((time - minTime) / (maxTime - minTime)) * plotWidth;
+                    const y = margin.top + ((maxPos - pos) / (maxPos - minPos)) * plotHeight;
+                    return { x, y };
+                }
+                
+                // Draw grid lines
+                timeseriesCtx.strokeStyle = '#3a3a4a';
+                timeseriesCtx.lineWidth = 0.5;
+                timeseriesCtx.setLineDash([2, 2]);
+                
+                // Vertical grid lines
+                for (let i = 0; i <= 5; i++) {
+                    const time = minTime + (maxTime - minTime) * (i / 5);
+                    const { x } = dataToCanvas(time, 0);
+                    timeseriesCtx.beginPath();
+                    timeseriesCtx.moveTo(x, margin.top);
+                    timeseriesCtx.lineTo(x, margin.top + plotHeight);
+                    timeseriesCtx.stroke();
+                }
+                
+                // Horizontal grid lines
+                for (let i = 0; i <= 4; i++) {
+                    const pos = minPos + (maxPos - minPos) * (i / 4);
+                    const { y } = dataToCanvas(0, pos);
+                    timeseriesCtx.beginPath();
+                    timeseriesCtx.moveTo(margin.left, y);
+                    timeseriesCtx.lineTo(margin.left + plotWidth, y);
+                    timeseriesCtx.stroke();
+                }
+                
+                timeseriesCtx.setLineDash([]);
+                
+                // Draw confidence bounds (filled area)
+                timeseriesCtx.fillStyle = 'rgba(0, 245, 212, 0.2)';
+                timeseriesCtx.beginPath();
+                
+                // Draw upper bound
+                let firstPoint = dataToCanvas(timeSeriesData[0].time, timeSeriesData[0].upperBound);
+                timeseriesCtx.moveTo(firstPoint.x, firstPoint.y);
+                for (let i = 1; i < timeSeriesData.length; i++) {
+                    const point = dataToCanvas(timeSeriesData[i].time, timeSeriesData[i].upperBound);
+                    timeseriesCtx.lineTo(point.x, point.y);
+                }
+                
+                // Draw lower bound (in reverse)
+                for (let i = timeSeriesData.length - 1; i >= 0; i--) {
+                    const point = dataToCanvas(timeSeriesData[i].time, timeSeriesData[i].lowerBound);
+                    timeseriesCtx.lineTo(point.x, point.y);
+                }
+                
+                timeseriesCtx.closePath();
+                timeseriesCtx.fill();
+                
+                // Draw lines
+                timeseriesCtx.lineWidth = 2;
+                
+                // Draw Kalman filter estimate
+                timeseriesCtx.strokeStyle = '#00f5d4'; // Cyan
+                timeseriesCtx.beginPath();
+                firstPoint = dataToCanvas(timeSeriesData[0].time, timeSeriesData[0].estimatedPos);
+                timeseriesCtx.moveTo(firstPoint.x, firstPoint.y);
+                for (let i = 1; i < timeSeriesData.length; i++) {
+                    const point = dataToCanvas(timeSeriesData[i].time, timeSeriesData[i].estimatedPos);
+                    timeseriesCtx.lineTo(point.x, point.y);
+                }
+                timeseriesCtx.stroke();
+                
+                // Draw true state
+                timeseriesCtx.strokeStyle = '#ffffff'; // White
+                timeseriesCtx.beginPath();
+                firstPoint = dataToCanvas(timeSeriesData[0].time, timeSeriesData[0].truePos);
+                timeseriesCtx.moveTo(firstPoint.x, firstPoint.y);
+                for (let i = 1; i < timeSeriesData.length; i++) {
+                    const point = dataToCanvas(timeSeriesData[i].time, timeSeriesData[i].truePos);
+                    timeseriesCtx.lineTo(point.x, point.y);
+                }
+                timeseriesCtx.stroke();
+                
+                // Draw axes (extending full canvas width/height)
+                timeseriesCtx.strokeStyle = '#6a6a7a';
+                timeseriesCtx.lineWidth = 1;
+                
+                // X-axis (full width)
+                timeseriesCtx.beginPath();
+                timeseriesCtx.moveTo(0, plotHeight);
+                timeseriesCtx.lineTo(timeseriesCanvas.width, plotHeight);
+                timeseriesCtx.stroke();
+                
+                // Y-axis (full height)
+                timeseriesCtx.beginPath();
+                timeseriesCtx.moveTo(0, 0);
+                timeseriesCtx.lineTo(0, timeseriesCanvas.height);
+                timeseriesCtx.stroke();
+                
+                // Add legend (positioned in top-left corner)
+                timeseriesCtx.textAlign = 'left';
+                timeseriesCtx.font = '11px Inter';
+                const legendX = 10;
+                const legendY = 15;
+                
+                // True state legend
+                timeseriesCtx.strokeStyle = '#ffffff';
+                timeseriesCtx.lineWidth = 2;
+                timeseriesCtx.beginPath();
+                timeseriesCtx.moveTo(legendX, legendY);
+                timeseriesCtx.lineTo(legendX + 20, legendY);
+                timeseriesCtx.stroke();
+                timeseriesCtx.fillStyle = '#ffffff';
+                timeseriesCtx.fillText('True State', legendX + 25, legendY + 4);
+                
+                // Kalman estimate legend
+                timeseriesCtx.strokeStyle = '#00f5d4';
+                timeseriesCtx.beginPath();
+                timeseriesCtx.moveTo(legendX, legendY + 20);
+                timeseriesCtx.lineTo(legendX + 20, legendY + 20);
+                timeseriesCtx.stroke();
+                timeseriesCtx.fillStyle = '#00f5d4';
+                timeseriesCtx.fillText('Kalman Filter', legendX + 25, legendY + 24);
+                
+                // Confidence bounds legend
+                timeseriesCtx.fillStyle = 'rgba(0, 245, 212, 0.3)';
+                timeseriesCtx.fillRect(legendX, legendY + 35, 20, 10);
+                timeseriesCtx.fillStyle = '#00f5d4';
+                timeseriesCtx.fillText('±3σ bounds', legendX + 25, legendY + 44);
+            }
+            
             // --- Animation and Drawing ---
 
             function animateUpdate(startX, startP, endX, endP) {
                 const animationDuration = 500; // ms
                 let startTime = null;
                 actionBtn.disabled = true;
+                resetFilterBtn.disabled = true; // Disable reset during animation
 
                 function animationStep(timestamp) {
                     if (!startTime) startTime = timestamp;
@@ -343,6 +642,8 @@
                         actionBtn.textContent = 'Take Measurement';
                         isMeasurementPhase = true;
                         actionBtn.disabled = false;
+                        resetFilterBtn.disabled = false; // Re-enable reset after animation
+                        observerSitesBtn.disabled = false; // Re-enable observer sites after animation
                         lastTime = performance.now();
                         animationFrameId = requestAnimationFrame(gameLoop);
                     }
@@ -376,12 +677,26 @@
 
             function drawTrueState() {
                 const stateColor = '#ffffff';
+                const trueStateCanvasX = worldToCanvasPos(trueState.pos);
+                
                 ctx.fillStyle = stateColor;
                 ctx.shadowColor = stateColor;
                 ctx.shadowBlur = 8;
+                
+                // Draw main circle
                 ctx.beginPath();
-                ctx.arc(canvas.width / 2 + trueState.pos, baselineY, 6, 0, 2 * Math.PI);
+                ctx.arc(trueStateCanvasX, baselineY, 6, 0, 2 * Math.PI);
                 ctx.fill();
+                
+                // Draw interaction hint (subtle outer ring)
+                ctx.strokeStyle = stateColor;
+                ctx.lineWidth = 1;
+                ctx.globalAlpha = 0.3;
+                ctx.beginPath();
+                ctx.arc(trueStateCanvasX, baselineY, 12, 0, 2 * Math.PI);
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+                
                 ctx.shadowBlur = 0;
             }
 
@@ -410,22 +725,46 @@
                 drawAxisLine();
                 drawZeroLine();
 
-                let distributionColor;
-                if (animationProgress !== undefined) {
-                    distributionColor = interpolateColor('#00f5d4', '#70e000', animationProgress);
+                if (isResettingFilter) {
+                    // Show filter reset preview
+                    if (resetStep === 0) {
+                        // Just show instructions
+                        ctx.fillStyle = '#a0a0b0';
+                        ctx.font = '16px Inter';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('Click to set filter center', canvas.width / 2, 50);
+                    } else if (resetStep === 1) {
+                        // Show preview of new filter distribution
+                        const previewVariance = Math.pow(resetWidth / 6, 2);
+                        drawDistribution(resetCenter, previewVariance, '#ff9500'); // Orange for preview
+                        
+                        ctx.fillStyle = '#a0a0b0';
+                        ctx.font = '16px Inter';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('Click to set filter width', canvas.width / 2, 50);
+                    }
                 } else {
-                    const isReadyForMeasurement = !showMeasurementDistribution;
-                    distributionColor = (showPosterior && isReadyForMeasurement) ? '#70e000' : '#00f5d4';
-                }
-                
-                drawDistribution(x[0][0], P[0][0], distributionColor);
+                    // Normal drawing
+                    let distributionColor;
+                    if (animationProgress !== undefined) {
+                        distributionColor = interpolateColor('#00f5d4', '#70e000', animationProgress);
+                    } else {
+                        const isReadyForMeasurement = !showMeasurementDistribution;
+                        distributionColor = (showPosterior && isReadyForMeasurement) ? '#70e000' : '#00f5d4';
+                    }
+                    
+                    drawDistribution(x[0][0], P[0][0], distributionColor);
 
-                if (showMeasurementDistribution && measurement !== null) {
-                    const pos_measurement = Array.isArray(measurement) ? measurement[0] : measurement;
-                    drawDistribution(pos_measurement, R_pos_only[0][0], '#ff00f7');
+                    if (showMeasurementDistribution && measurement !== null) {
+                        const pos_measurement = Array.isArray(measurement) ? measurement[0] : measurement;
+                        drawDistribution(pos_measurement, R_pos_only[0][0], '#ff00f7');
+                    }
                 }
 
                 drawTrueState();
+                
+                // Draw observer sites
+                drawObserverSites();
             }
             
             function gameLoop(timestamp) {
@@ -433,27 +772,19 @@
                 lastTime = timestamp;
 
                 if (!isNaN(dt) && dt > 0) {
+                    // Store previous position for observer crossing detection
+                    const prevPos = trueState.pos;
+                    
                     updateTrueState(dt);
                     predict(dt);
-                    if (autoUpdateInterval > 0) {
-                        timeSinceLastAutoUpdate += dt;
-                        if (timeSinceLastAutoUpdate >= autoUpdateInterval) {
-                            let autoMeasurement;
-                            if (isDopplerEnabled) {
-                                const posNoise = (Math.random() - 0.5) * 2 * Math.sqrt(R_doppler[0][0]);
-                                const velNoise = (Math.random() - 0.5) * 2 * Math.sqrt(R_doppler[1][1]);
-                                autoMeasurement = [trueState.pos + posNoise, trueState.vel + velNoise];
-                            } else {
-                                autoMeasurement = trueState.pos + (Math.random() - 0.5) * 2 * Math.sqrt(R_pos_only[0][0]);
-                            }
-                            update(autoMeasurement);
-                            showPosterior = true;
-                            timeSinceLastAutoUpdate = 0;
-                        }
-                    }
+                    addToBuffer(dt); // Add current state to buffer
+                    
+                    // Check for observer site crossings
+                    checkObserverCrossings(prevPos, trueState.pos);
                 }
                 
                 draw();
+                drawTimeSeries(); // Draw the time series plot
                 animationFrameId = requestAnimationFrame(gameLoop);
             }
             
@@ -464,7 +795,6 @@
                 qPosSliderValue.textContent = parseFloat(qPosSlider.value).toFixed(3);
                 qVelSliderValue.textContent = parseFloat(qVelSlider.value).toFixed(3);
                 qkSliderValue.textContent = parseFloat(qkSlider.value).toFixed(6);
-                updateFreqSliderValue.textContent = parseFloat(updateFreqSlider.value).toFixed(1);
             }
 
             actionBtn.addEventListener('click', () => {
@@ -481,6 +811,8 @@
                     showMeasurementDistribution = true;
                     actionBtn.textContent = 'Run Filter';
                     isMeasurementPhase = false;
+                    resetFilterBtn.disabled = true; // Disable reset during measurement phase
+                    observerSitesBtn.disabled = true; // Disable observer sites during measurement phase
                     draw(); 
                     cancelAnimationFrame(animationFrameId);
                 } else {
@@ -509,21 +841,87 @@
                     toggleDopplerBtn.classList.remove('active');
                 }
             });
+
+            resetFilterBtn.addEventListener('click', () => {
+                if (!isResettingFilter) {
+                    // Start filter reset mode
+                    isResettingFilter = true;
+                    resetStep = 0;
+                    resetFilterBtn.textContent = 'Click to Set Center';
+                    
+                    // Disable measurement button and observer sites during reset
+                    actionBtn.disabled = true;
+                    observerSitesBtn.disabled = true;
+                    
+                    // Freeze animation
+                    cancelAnimationFrame(animationFrameId);
+                    
+                    // Update cursor and display
+                    canvas.style.cursor = 'crosshair';
+                    draw();
+                    drawTimeSeries();
+                } else {
+                    // Cancel filter reset mode
+                    isResettingFilter = false;
+                    resetStep = 0;
+                    resetFilterBtn.textContent = 'Reset Filter';
+                    canvas.style.cursor = 'grab';
+                    
+                    // Re-enable measurement button and observer sites
+                    actionBtn.disabled = false;
+                    observerSitesBtn.disabled = false;
+                    
+                    // Resume animation
+                    lastTime = performance.now();
+                    animationFrameId = requestAnimationFrame(gameLoop);
+                }
+            });
+
+            observerSitesBtn.addEventListener('click', () => {
+                placingObserverSites = !placingObserverSites;
+                
+                if (placingObserverSites) {
+                    // Enter observer sites mode
+                    observerSitesBtn.textContent = 'Exit Observer Sites';
+                    canvas.style.cursor = 'crosshair';
+                    clearSitesBtn.style.display = 'block'; // Show clear button
+                    
+                    // Disable other interactive buttons
+                    actionBtn.disabled = true;
+                    resetFilterBtn.disabled = true;
+                    
+                    // Pause animation
+                    cancelAnimationFrame(animationFrameId);
+                } else {
+                    // Exit observer sites mode
+                    observerSitesBtn.textContent = 'Observer Sites';
+                    canvas.style.cursor = 'default';
+                    clearSitesBtn.style.display = 'none'; // Hide clear button
+                    
+                    // Re-enable other buttons
+                    actionBtn.disabled = false;
+                    resetFilterBtn.disabled = false;
+                    
+                    // Resume animation
+                    lastTime = performance.now();
+                    animationFrameId = requestAnimationFrame(gameLoop);
+                }
+            });
+
+            clearSitesBtn.addEventListener('click', () => {
+                clearAllObserverSites();
+            });
             
             freqSlider.addEventListener('input', (e) => {
                 trueState.k = parseFloat(e.target.value);
                 updateAllSliderValues();
             });
 
-            [qPosSlider, qVelSlider, qkSlider, updateFreqSlider].forEach(slider => {
+            [qPosSlider, qVelSlider, qkSlider].forEach(slider => {
                 slider.addEventListener('input', (e) => {
                     if (e.target === qPosSlider) Q[0][0] = parseFloat(e.target.value);
                     if (e.target === qVelSlider) Q[1][1] = parseFloat(e.target.value);
                     if (e.target === qkSlider) Q[2][2] = parseFloat(e.target.value);
-                    if (e.target === updateFreqSlider) {
-                        const freq = parseFloat(e.target.value);
-                        autoUpdateInterval = (freq > 0) ? 1 / freq : 0;
-                    }
                     updateAllSliderValues();
                 });
             });
@@ -546,12 +944,208 @@
                 return rgbToHex(r, g, b);
             }
 
+            // --- Mouse Event Handlers ---
+            
+            function getMousePos(canvas, e) {
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                
+                return {
+                    x: (e.clientX - rect.left) * scaleX,
+                    y: (e.clientY - rect.top) * scaleY
+                };
+            }
+
+            canvas.addEventListener('mousedown', (e) => {
+                const mousePos = getMousePos(canvas, e);
+                
+                if (placingObserverSites) {
+                    // Handle observer site placement/removal
+                    const worldPos = canvasToWorldPos(mousePos.x);
+                    
+                    // Try to remove a observer site first (if clicking near one)
+                    if (!removeObserverSite(worldPos)) {
+                        // No site was removed, so add a new one
+                        addObserverSite(worldPos);
+                    }
+                    
+                    // Redraw to show the change
+                    draw();
+                    drawTimeSeries();
+                    return;
+                }
+                
+                if (isResettingFilter) {
+                    // Handle filter reset clicks
+                    if (resetStep === 0) {
+                        // First click: set center
+                        resetCenter = canvasToWorldPos(mousePos.x);
+                        resetStep = 1;
+                        resetFilterBtn.textContent = 'Click to Set Width';
+                        
+                        // Redraw to show the new center
+                        draw();
+                        drawTimeSeries();
+                    } else if (resetStep === 1) {
+                        // Second click: set width and complete reset
+                        const clickPos = canvasToWorldPos(mousePos.x);
+                        resetWidth = Math.abs(clickPos - resetCenter) * 2; // Full width
+                        
+                        // Apply the new filter settings
+                        x[0][0] = resetCenter; // Position
+                        x[1][0] = 0; // Velocity
+                        x[2][0] = parseFloat(freqSlider.value); // K value
+                        
+                        // Set covariance matrix
+                        const variance = Math.pow(resetWidth / 6, 2); // Convert width to variance (assuming 6-sigma width)
+                        P = [
+                            [variance, 0, 0],
+                            [0, 10000, 0], // Keep velocity uncertainty high
+                            [0, 0, 10000]  // Keep K uncertainty high
+                        ];
+                        
+                        // Exit reset mode and resume animation
+                        isResettingFilter = false;
+                        resetStep = 0;
+                        resetFilterBtn.textContent = 'Reset Filter';
+                        canvas.style.cursor = 'grab';
+                        
+                        // Re-enable measurement button and observer sites
+                        actionBtn.disabled = false;
+                        observerSitesBtn.disabled = false;
+                        
+                        // Resume animation
+                        lastTime = performance.now();
+                        animationFrameId = requestAnimationFrame(gameLoop);
+                        
+                        draw();
+                        drawTimeSeries();
+                    }
+                    return;
+                }
+                
+                // Handle measurement position adjustment when in measurement phase
+                if (!isMeasurementPhase && measurement !== null) {
+                    // Allow user to change measurement position by clicking
+                    const worldPos = canvasToWorldPos(mousePos.x);
+                    
+                    if (isDopplerEnabled) {
+                        // For Doppler mode, update position but keep the same velocity noise
+                        const posNoise = (Math.random() - 0.5) * 2 * Math.sqrt(R_doppler[0][0]);
+                        const velNoise = measurement[1] - trueState.vel; // Keep original velocity noise
+                        measurement = [worldPos + posNoise, trueState.vel + velNoise];
+                    } else {
+                        // For position-only mode, update measurement position
+                        const posNoise = (Math.random() - 0.5) * 2 * Math.sqrt(R_pos_only[0][0]);
+                        measurement = worldPos + posNoise;
+                    }
+                    
+                    // Redraw to show the new measurement position
+                    draw();
+                    drawTimeSeries();
+                    return;
+                }
+                
+                // Prevent other interactions during measurement phase
+                if (!isMeasurementPhase) {
+                    return;
+                }
+                
+                // Normal drag interaction (only when in measurement phase)
+                isDragging = true;
+                
+                // Move true state to clicked position immediately
+                trueState.pos = canvasToWorldPos(mousePos.x);
+                trueState.vel = 0;
+                
+                canvas.style.cursor = 'grabbing';
+                
+                // Pause the animation while dragging
+                cancelAnimationFrame(animationFrameId);
+                
+                // Redraw immediately to show the new position
+                draw();
+                drawTimeSeries();
+                
+                e.preventDefault();
+            });
+
+            canvas.addEventListener('mousemove', (e) => {
+                const mousePos = getMousePos(canvas, e);
+                
+                if (placingObserverSites) {
+                    // Show crosshair cursor in observer sites mode
+                    canvas.style.cursor = 'crosshair';
+                } else if (isResettingFilter && resetStep === 1) {
+                    // Show preview of filter distribution while setting width
+                    const clickPos = canvasToWorldPos(mousePos.x);
+                    resetWidth = Math.abs(clickPos - resetCenter) * 2; // Full width
+                    
+                    // Redraw with preview
+                    draw();
+                    drawTimeSeries();
+                } else if (isDragging && isMeasurementPhase) {
+                    // Only allow dragging when in measurement phase
+                    // Update true state position based on mouse position
+                    trueState.pos = canvasToWorldPos(mousePos.x);
+                    
+                    // Redraw the scene while dragging
+                    draw();
+                    drawTimeSeries();
+                    
+                    e.preventDefault();
+                } else {
+                    // Show appropriate cursor based on current mode
+                    if (!isResettingFilter && !placingObserverSites) {
+                        if (isMeasurementPhase) {
+                            // In measurement phase - can drag true state
+                            canvas.style.cursor = 'grab';
+                        } else if (!isMeasurementPhase && measurement !== null) {
+                            // In measurement adjustment phase - can click to change measurement position
+                            canvas.style.cursor = 'crosshair';
+                        } else {
+                            canvas.style.cursor = 'default';
+                        }
+                    }
+                }
+            });
+
+            canvas.addEventListener('mouseup', (e) => {
+                if (isDragging && isMeasurementPhase) {
+                    // Set velocity to zero when releasing
+                    trueState.vel = 0;
+                    
+                    isDragging = false;
+                    canvas.style.cursor = 'default';
+                    
+                    // Resume the animation only if in measurement phase
+                    lastTime = performance.now();
+                    animationFrameId = requestAnimationFrame(gameLoop);
+                    
+                    e.preventDefault();
+                }
+            });
+
+            canvas.addEventListener('mouseleave', (e) => {
+                if (isDragging && isMeasurementPhase) {
+                    isDragging = false;
+                    canvas.style.cursor = 'default';
+                    
+                    // Resume the animation if user drags outside canvas (only in measurement phase)
+                    lastTime = performance.now();
+                    animationFrameId = requestAnimationFrame(gameLoop);
+                } else {
+                    canvas.style.cursor = 'default';
+                }
+            });
+
             // --- Initial Setup ---
             updateAllSliderValues();
+            drawTimeSeries(); // Initial draw of empty time series
             lastTime = performance.now();
             animationFrameId = requestAnimationFrame(gameLoop);
         });
     </script>
 </body>
 </html>
-
