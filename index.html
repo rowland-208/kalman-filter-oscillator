@@ -253,17 +253,17 @@
         <div class="controls-group">
             <div class="slider-container">
                 <label for="q-pos-slider">Position Process Noise:</label>
-                <input type="range" id="q-pos-slider" min="0" max="1.0" step="0.01" value="0.5">
+                <input type="range" id="q-pos-slider" min="0" max="1.0" step="0.01" value="0.0">
                 <span id="q-pos-slider-value" class="slider-value"></span>
             </div>
             <div class="slider-container">
                 <label for="q-vel-slider">Velocity Process Noise:</label>
-                <input type="range" id="q-vel-slider" min="0" max="1.0" step="0.01" value="0.5">
+                <input type="range" id="q-vel-slider" min="0" max="1.0" step="0.01" value="0.0">
                 <span id="q-vel-slider-value" class="slider-value"></span>
             </div>
             <div class="slider-container" id="q-k-slider-container">
                 <label for="q-k-slider">K Process Noise:</label>
-                <input type="range" id="q-k-slider" min="0" max="1e-3" step="1e-5" value="5e-4">
+                <input type="range" id="q-k-slider" min="0" max="1e-3" step="1e-5" value="0.0">
                 <span id="q-k-slider-value" class="slider-value"></span>
             </div>
         </div>
@@ -271,12 +271,12 @@
         <div class="controls-group" id="reset-uncertainty-controls" style="display: none;">
             <div class="slider-container">
                 <label for="reset-vel-uncertainty-slider">Reset Velocity Uncertainty:</label>
-                <input type="range" id="reset-vel-uncertainty-slider" min="0" max="100" step="1" value="100">
+                <input type="range" id="reset-vel-uncertainty-slider" min="0" max="100" step="1" value="0">
                 <span id="reset-vel-uncertainty-value" class="slider-value"></span>
             </div>
             <div class="slider-container">
                 <label for="reset-k-uncertainty-slider">Reset K Uncertainty:</label>
-                <input type="range" id="reset-k-uncertainty-slider" min="0" max="0.01" step="0.0001" value="0.01">
+                <input type="range" id="reset-k-uncertainty-slider" min="0" max="0.01" step="0.0001" value="0">
                 <span id="reset-k-uncertainty-value" class="slider-value"></span>
             </div>
         </div>
