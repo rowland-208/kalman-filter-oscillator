@@ -73,6 +73,36 @@
             border-color: #ffb347;
             color: #ffb347;
         }
+        .icon-btn {
+            position: absolute;
+            top: 10px;
+            width: fit-content;
+            height: fit-content;
+            padding: 0;
+            margin: 0;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: var(--primary-text);
+            transition: all 0.3s;
+            z-index: 10;
+            font-size: 16px;
+            line-height: 1;
+            display: inline-block;
+            min-width: 0;
+            min-height: 0;
+        }
+        .icon-btn:hover {
+            color: var(--accent-blue);
+            transform: scale(1.1);
+            text-shadow: 0 0 8px var(--accent-blue);
+        }
+        #play-pause-btn {
+            right: 35px;
+        }
+        #sim-reset-btn {
+            right: 10px;
+        }
         .controls-group {
             margin-top: 20px;
             padding-top: 20px;
@@ -205,6 +235,8 @@
         <div style="position: relative;">
             <canvas id="kalman-canvas" width="800" height="200"></canvas>
             <button id="clear-sites-btn">Clear All Sites</button>
+            <button id="play-pause-btn" class="icon-btn" title="Play/Pause">⏸️</button>
+            <button id="sim-reset-btn" class="icon-btn" title="Reset Simulation">🔄</button>
         </div>
         <canvas id="timeseries-canvas" width="800" height="200"></canvas>
         <div id="main-controls">
@@ -235,6 +267,19 @@
                 <span id="q-k-slider-value" class="slider-value"></span>
             </div>
         </div>
+        <!-- Reset Filter Uncertainty Sliders (hidden by default) -->
+        <div class="controls-group" id="reset-uncertainty-controls" style="display: none;">
+            <div class="slider-container">
+                <label for="reset-vel-uncertainty-slider">Reset Velocity Uncertainty:</label>
+                <input type="range" id="reset-vel-uncertainty-slider" min="0" max="100" step="1" value="100">
+                <span id="reset-vel-uncertainty-value" class="slider-value"></span>
+            </div>
+            <div class="slider-container">
+                <label for="reset-k-uncertainty-slider">Reset K Uncertainty:</label>
+                <input type="range" id="reset-k-uncertainty-slider" min="0" max="0.01" step="0.0001" value="0.01">
+                <span id="reset-k-uncertainty-value" class="slider-value"></span>
+            </div>
+        </div>
     </div>
 
     <!-- We use the numeric.js library for matrix operations -->
@@ -247,6 +292,8 @@
             const timeseriesCtx = timeseriesCanvas.getContext('2d');
             
             // --- Control Elements ---
+            const playPauseBtn = document.getElementById('play-pause-btn');
+            const simResetBtn = document.getElementById('sim-reset-btn');
             const actionBtn = document.getElementById('action-btn');
             const toggleDopplerBtn = document.getElementById('toggle-doppler-btn');
             const resetFilterBtn = document.getElementById('reset-filter-btn');
@@ -256,17 +303,45 @@
             const qPosSlider = document.getElementById('q-pos-slider');
             const qVelSlider = document.getElementById('q-vel-slider');
             const qkSlider = document.getElementById('q-k-slider');
+            const resetVelUncertaintySlider = document.getElementById('reset-vel-uncertainty-slider');
+            const resetKUncertaintySlider = document.getElementById('reset-k-uncertainty-slider');
             
             // --- Slider Value Display Elements ---
             const freqSliderValue = document.getElementById('freq-slider-value');
             const qPosSliderValue = document.getElementById('q-pos-slider-value');
             const qVelSliderValue = document.getElementById('q-vel-slider-value');
             const qkSliderValue = document.getElementById('q-k-slider-value');
+            const resetVelUncertaintyValue = document.getElementById('reset-vel-uncertainty-value');
+            const resetKUncertaintyValue = document.getElementById('reset-k-uncertainty-value');
+            
+            // --- Reset Uncertainty Controls ---
+            const resetUncertaintyControls = document.getElementById('reset-uncertainty-controls');
             
             // --- Graphics Constants ---
             const baselineY = canvas.height * 0.8;
 
             // --- State Initialization ---
+            let isPaused = false;
+            
+            // Store initial state for simulation reset
+            const initialState = {
+                trueState: {
+                    pos: 150,
+                    vel: 0,
+                    k: 1.0 // Will be updated from slider
+                },
+                x: [[0], [0], [0.5]],
+                P: [[10000, 0, 0], [0, 10000, 0], [0, 0, 10000]],
+                measurement: null,
+                showMeasurementDistribution: false,
+                showPosterior: false,
+                isMeasurementPhase: true,
+                isDopplerEnabled: false,
+                observerSites: [],
+                timeSeriesData: [],
+                timeCounter: 0
+            };
+            
             let trueState = {
                 pos: 150,
                 vel: 0,
@@ -311,6 +386,90 @@
             const bufferSize = 400;
             let timeSeriesData = [];
             let timeCounter = 0;
+
+            // --- Simulation Control Functions ---
+            
+            function pauseSimulation() {
+                isPaused = true;
+                playPauseBtn.innerHTML = '▶️';
+                playPauseBtn.title = 'Play';
+                cancelAnimationFrame(animationFrameId);
+            }
+            
+            function resumeSimulation() {
+                isPaused = false;
+                playPauseBtn.innerHTML = '⏸️';
+                playPauseBtn.title = 'Pause';
+                lastTime = performance.now();
+                animationFrameId = requestAnimationFrame(gameLoop);
+            }
+            
+            function resetSimulation() {
+                // Cancel any ongoing animations
+                cancelAnimationFrame(animationFrameId);
+                
+                // Reset all state variables to initial values
+                trueState = {
+                    pos: initialState.trueState.pos,
+                    vel: initialState.trueState.vel,
+                    k: parseFloat(freqSlider.value)
+                };
+                
+                x = JSON.parse(JSON.stringify(initialState.x));
+                P = JSON.parse(JSON.stringify(initialState.P));
+                
+                // Update initial K value in stored state and current filter
+                x[2][0] = parseFloat(freqSlider.value);
+                initialState.x[2][0] = parseFloat(freqSlider.value);
+                
+                // Reset process noise matrix
+                Q = [
+                    [parseFloat(qPosSlider.value), 0, 0],
+                    [0, parseFloat(qVelSlider.value), 0],
+                    [0, 0, parseFloat(qkSlider.value)]
+                ];
+                
+                // Reset other state variables
+                measurement = initialState.measurement;
+                showMeasurementDistribution = initialState.showMeasurementDistribution;
+                showPosterior = initialState.showPosterior;
+                isMeasurementPhase = initialState.isMeasurementPhase;
+                isDopplerEnabled = initialState.isDopplerEnabled;
+                observerSites = [...initialState.observerSites];
+                timeSeriesData = [...initialState.timeSeriesData];
+                timeCounter = initialState.timeCounter;
+                
+                // Reset UI elements
+                actionBtn.textContent = 'Take Measurement';
+                actionBtn.disabled = false;
+                toggleDopplerBtn.textContent = 'Enable Doppler';
+                toggleDopplerBtn.classList.remove('active');
+                resetFilterBtn.textContent = 'Reset Filter';
+                resetFilterBtn.disabled = false;
+                observerSitesBtn.textContent = 'Observer Sites';
+                observerSitesBtn.disabled = false;
+                clearSitesBtn.style.display = 'none';
+                resetUncertaintyControls.style.display = 'none';
+                
+                // Reset mode flags
+                isResettingFilter = false;
+                resetStep = 0;
+                placingObserverSites = false;
+                isDragging = false;
+                
+                // Reset canvas cursor
+                canvas.style.cursor = 'default';
+                
+                // Resume simulation if not paused
+                if (!isPaused) {
+                    lastTime = performance.now();
+                    animationFrameId = requestAnimationFrame(gameLoop);
+                } else {
+                    // If paused, just redraw once
+                    draw();
+                    drawTimeSeries();
+                }
+            }
 
             function canvasToWorldPos(canvasX) {
                 return canvasX - canvas.width / 2;
@@ -768,6 +927,11 @@
             }
             
             function gameLoop(timestamp) {
+                // Don't continue if paused
+                if (isPaused) {
+                    return;
+                }
+                
                 const dt = (timestamp - lastTime) / 1000;
                 lastTime = timestamp;
 
@@ -790,11 +954,25 @@
             
             // --- Helpers & Event Listeners ---
 
+            playPauseBtn.addEventListener('click', () => {
+                if (isPaused) {
+                    resumeSimulation();
+                } else {
+                    pauseSimulation();
+                }
+            });
+
+            simResetBtn.addEventListener('click', () => {
+                resetSimulation();
+            });
+
             function updateAllSliderValues() {
                 freqSliderValue.textContent = parseFloat(freqSlider.value).toFixed(1);
                 qPosSliderValue.textContent = parseFloat(qPosSlider.value).toFixed(3);
                 qVelSliderValue.textContent = parseFloat(qVelSlider.value).toFixed(3);
                 qkSliderValue.textContent = parseFloat(qkSlider.value).toFixed(6);
+                resetVelUncertaintyValue.textContent = parseFloat(resetVelUncertaintySlider.value).toFixed(1);
+                resetKUncertaintyValue.textContent = parseFloat(resetKUncertaintySlider.value).toFixed(4);
             }
 
             actionBtn.addEventListener('click', () => {
@@ -849,6 +1027,9 @@
                     resetStep = 0;
                     resetFilterBtn.textContent = 'Click to Set Center';
                     
+                    // Show reset uncertainty controls
+                    resetUncertaintyControls.style.display = 'block';
+                    
                     // Disable measurement button and observer sites during reset
                     actionBtn.disabled = true;
                     observerSitesBtn.disabled = true;
@@ -866,6 +1047,9 @@
                     resetStep = 0;
                     resetFilterBtn.textContent = 'Reset Filter';
                     canvas.style.cursor = 'grab';
+                    
+                    // Hide reset uncertainty controls
+                    resetUncertaintyControls.style.display = 'none';
                     
                     // Re-enable measurement button and observer sites
                     actionBtn.disabled = false;
@@ -914,6 +1098,8 @@
             
             freqSlider.addEventListener('input', (e) => {
                 trueState.k = parseFloat(e.target.value);
+                // Update initial state as well
+                initialState.trueState.k = parseFloat(e.target.value);
                 updateAllSliderValues();
             });
 
@@ -925,6 +1111,10 @@
                     updateAllSliderValues();
                 });
             });
+            
+            // Reset uncertainty slider event listeners
+            resetVelUncertaintySlider.addEventListener('input', updateAllSliderValues);
+            resetKUncertaintySlider.addEventListener('input', updateAllSliderValues);
             
             function hexToRgb(hex) {
                 const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -995,14 +1185,16 @@
                         // Apply the new filter settings
                         x[0][0] = resetCenter; // Position
                         x[1][0] = 0; // Velocity
-                        x[2][0] = parseFloat(freqSlider.value); // K value
+                        x[2][0] = 0; // K value - set to zero after reset
                         
                         // Set covariance matrix
                         const variance = Math.pow(resetWidth / 6, 2); // Convert width to variance (assuming 6-sigma width)
+                        const velUncertainty = parseFloat(resetVelUncertaintySlider.value);
+                        const kUncertainty = parseFloat(resetKUncertaintySlider.value);
                         P = [
                             [variance, 0, 0],
-                            [0, 10000, 0], // Keep velocity uncertainty high
-                            [0, 0, 10000]  // Keep K uncertainty high
+                            [0, velUncertainty, 0], // Use slider value for velocity uncertainty
+                            [0, 0, kUncertainty]  // Use slider value for K uncertainty
                         ];
                         
                         // Exit reset mode and resume animation
@@ -1010,6 +1202,9 @@
                         resetStep = 0;
                         resetFilterBtn.textContent = 'Reset Filter';
                         canvas.style.cursor = 'grab';
+                        
+                        // Hide reset uncertainty controls
+                        resetUncertaintyControls.style.display = 'none';
                         
                         // Re-enable measurement button and observer sites
                         actionBtn.disabled = false;
